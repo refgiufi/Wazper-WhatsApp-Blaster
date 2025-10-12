@@ -75,6 +75,9 @@ function switchSection(section) {
         case 'accounts':
             loadAccounts();
             break;
+        case 'messages':
+            loadMessagesPage();
+            break;
         case 'contacts':
             loadContacts();
             break;
@@ -97,11 +100,22 @@ function switchSection(section) {
 async function apiCall(endpoint, options = {}) {
     try {
         showLoading();
+        
+        // Prepare headers - don't set Content-Type for FormData (browser will set it automatically)
+        let headers = {};
+        
+        // Only set JSON content type if body is not FormData
+        if (!(options.body instanceof FormData)) {
+            headers['Content-Type'] = 'application/json';
+        }
+        
+        // Merge with any custom headers
+        if (options.headers) {
+            headers = { ...headers, ...options.headers };
+        }
+        
         const response = await fetch(endpoint, {
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers
-            },
+            headers: headers,
             ...options
         });
         
@@ -269,20 +283,26 @@ function getAccountActionButtons(account) {
     let buttons = '';
     
     if (account.status === 'disconnected') {
-        buttons += `<button class="btn btn-success btn-sm" onclick="connectAccount(${account.id})">
+        buttons += `<button class="btn btn-success btn-sm me-1" onclick="connectAccount(${account.id})">
             <i class="fas fa-play"></i> Hubungkan
+        </button>`;
+        buttons += `<button class="btn btn-primary btn-sm" onclick="forceReconnectAccount(${account.id})" title="Force reconnect dengan QR baru">
+            <i class="fas fa-sync-alt"></i> QR Baru
         </button>`;
     } else if (account.status === 'connected') {
         buttons += `<button class="btn btn-warning btn-sm" onclick="disconnectAccount(${account.id})">
             <i class="fas fa-stop"></i> Putuskan
         </button>`;
     } else if (account.status === 'connecting') {
-        buttons += `<button class="btn btn-info btn-sm" onclick="showQRCode(${account.id})">
+        buttons += `<button class="btn btn-info btn-sm me-1" onclick="showQRCode(${account.id})">
             <i class="fas fa-qrcode"></i> QR Code
+        </button>`;
+        buttons += `<button class="btn btn-secondary btn-sm" onclick="forceReconnectAccount(${account.id})" title="Generate QR baru">
+            <i class="fas fa-redo"></i> Reset QR
         </button>`;
     }
     
-    buttons += ` <button class="btn btn-danger btn-sm" onclick="deleteAccount(${account.id})">
+    buttons += ` <button class="btn btn-danger btn-sm ms-1" onclick="deleteAccount(${account.id})">
         <i class="fas fa-trash"></i>
     </button>`;
     
@@ -291,14 +311,18 @@ function getAccountActionButtons(account) {
 
 // Function untuk membuat akun baru langsung dengan QR Code
 async function createNewAccount() {
+    console.log('CreateNewAccount called');
     try {
         showAlert('Membuat akun WhatsApp baru...', 'info');
         
+        console.log('Getting accounts for device numbering...');
         // Get current account count to generate device name
         const accounts = await apiCall('/api/accounts');
         const deviceNumber = accounts.length + 1;
         const accountName = `device-${deviceNumber}`;
         const accountPhone = null; // Will be auto-detected after connection
+        
+        console.log('Creating account:', { name: accountName, phone: accountPhone });
         
         // Create account
         const newAccount = await apiCall('/api/accounts', {
@@ -309,23 +333,31 @@ async function createNewAccount() {
             })
         });
         
+        console.log('Account created:', newAccount);
+        
         // Immediately show QR Code for the new account
         const accountId = newAccount.id;
         
+        console.log('Connecting account:', accountId);
         // Connect account first to generate QR
         await apiCall(`/api/accounts/${accountId}/connect`, { method: 'POST' });
         
+        console.log('Showing QR Code...');
         // Then show QR modal
         await showQRCode(accountId);
         
     } catch (error) {
+        console.error('CreateNewAccount error:', error);
         showAlert('Gagal membuat akun: ' + error.message, 'danger');
     }
 }
 
 async function addAccount() {
+    console.log('AddAccount called');
     const name = document.getElementById('accountName').value;
     const phone = document.getElementById('accountPhone').value;
+    
+    console.log('Form values:', { name, phone });
     
     if (!name || !phone) {
         showAlert('Nama dan nomor telepon harus diisi', 'warning');
@@ -333,11 +365,14 @@ async function addAccount() {
     }
     
     try {
+        console.log('Creating account...');
         // Create account
         const newAccount = await apiCall('/api/accounts', {
             method: 'POST',
             body: JSON.stringify({ name, phone })
         });
+        
+        console.log('Account created:', newAccount);
         
         // Close add account modal
         const modal = bootstrap.Modal.getInstance(document.getElementById('addAccountModal'));
@@ -348,35 +383,44 @@ async function addAccount() {
         
         // Automatically connect the new account
         const accountId = newAccount.id;
+        console.log('Connecting account:', accountId);
         await connectAccount(accountId, true); // true = show QR immediately
         
     } catch (error) {
+        console.error('AddAccount error:', error);
         showAlert('Gagal menambahkan akun: ' + error.message, 'danger');
     }
 }
 
 async function connectAccount(accountId, showQRImmediately = false) {
+    console.log('ConnectAccount called for ID:', accountId, 'showQRImmediately:', showQRImmediately);
     try {
+        console.log('Calling connect API...');
         await apiCall(`/api/accounts/${accountId}/connect`, {
             method: 'POST'
         });
         
+        console.log('Connect API success');
+        
         if (showQRImmediately) {
             showAlert('Scan QR Code untuk menghubungkan WhatsApp Anda', 'info');
+            console.log('Showing QR immediately in 1 second...');
             // Show QR immediately for new accounts
             setTimeout(() => {
+                console.log('Calling showQRCode now');
                 showQRCode(accountId);
             }, 1000);
         } else {
             showAlert('Proses koneksi dimulai. Silakan scan QR code.', 'info');
-            // Refresh accounts and show QR modal after a delay
+            console.log('Showing QR after delay...');
+            // Show QR modal after a delay without excessive refresh
             setTimeout(() => {
-                loadAccounts();
                 showQRCode(accountId);
             }, 2000);
         }
         
     } catch (error) {
+        console.error('ConnectAccount error:', error);
         showAlert('Gagal menghubungkan akun: ' + error.message, 'danger');
     }
 }
@@ -389,10 +433,40 @@ async function disconnectAccount(accountId) {
             });
             
             showAlert('Akun berhasil diputuskan', 'success');
-            loadAccounts();
+            setTimeout(() => loadAccounts(), 500); // Delayed refresh
             
         } catch (error) {
             showAlert('Gagal memutuskan akun: ' + error.message, 'danger');
+        }
+    }
+}
+
+async function forceReconnectAccount(accountId) {
+    const confirmation = confirm(
+        'Force reconnect akan menghapus semua data session dan membuat QR code baru.\n\n' +
+        'Ini akan memaksa WhatsApp untuk logout dari perangkat dan memerlukan scan QR baru.\n\n' +
+        'Lanjutkan?'
+    );
+    
+    if (confirmation) {
+        try {
+            showAlert('Memulai force reconnection... Mohon tunggu', 'info');
+            
+            const response = await apiCall(`/api/accounts/${accountId}/force-reconnect`, {
+                method: 'POST'
+            });
+            
+            showAlert(response.message || 'Force reconnection berhasil dimulai', 'success');
+            
+            // Show QR code modal after a delay to allow backend processing  
+            setTimeout(() => {
+                loadAccounts(); // Single refresh after processing
+                showQRCode(accountId);
+            }, 2000);
+            
+        } catch (error) {
+            console.error('Force reconnect error:', error);
+            showAlert('Gagal melakukan force reconnect: ' + error.message, 'danger');
         }
     }
 }
@@ -405,7 +479,7 @@ async function deleteAccount(accountId) {
             });
             
             showAlert('Akun berhasil dihapus', 'success');
-            loadAccounts();
+            setTimeout(() => loadAccounts(), 500); // Delayed refresh
             
         } catch (error) {
             showAlert('Gagal menghapus akun: ' + error.message, 'danger');
@@ -413,12 +487,41 @@ async function deleteAccount(accountId) {
     }
 }
 
+// Global variable to track QR intervals
+let currentStatusInterval = null;
+
 async function showQRCode(accountId) {
+    console.log('ShowQRCode called for ID:', accountId);
+    
+    // Clear any existing interval to prevent multiple intervals
+    if (currentStatusInterval) {
+        clearInterval(currentStatusInterval);
+        currentStatusInterval = null;
+    }
+    
     try {
         showAlert('Scan QR Code untuk menghubungkan WhatsApp Anda', 'info');
         
-        const modal = new bootstrap.Modal(document.getElementById('qrModal'));
+        const modalEl = document.getElementById('qrModal');
         const container = document.getElementById('qr-container');
+        
+        console.log('Modal element:', modalEl);
+        console.log('Container element:', container);
+        console.log('Bootstrap available:', typeof bootstrap);
+        
+        if (!modalEl || !container) {
+            console.error('Modal elements not found!');
+            showAlert('Error: Modal elements tidak ditemukan', 'danger');
+            return;
+        }
+        
+        if (typeof bootstrap === 'undefined') {
+            console.error('Bootstrap not loaded!');
+            alert('Bootstrap tidak ter-load! Silakan refresh halaman.');
+            return;
+        }
+        
+        const modal = new bootstrap.Modal(modalEl);
         
         // Show loading spinner initially
         container.innerHTML = `
@@ -429,7 +532,15 @@ async function showQRCode(accountId) {
             </div>
             <p class="mt-2 text-center text-muted">Generating QR Code...</p>
         `;
-        modal.show();
+        
+        console.log('Showing modal...');
+        try {
+            modal.show();
+            console.log('Modal.show() called successfully');
+        } catch (modalError) {
+            console.error('Modal.show() error:', modalError);
+            alert('Error showing modal: ' + modalError.message);
+        }
         
         // Function to check and update QR code
         const updateQRCode = async () => {
@@ -439,7 +550,7 @@ async function showQRCode(accountId) {
                 if (account.status === 'connected') {
                     modal.hide();
                     showAlert('✅ WhatsApp berhasil terhubung!', 'success');
-                    loadAccounts(); // Refresh table to show connected account
+                    // Don't refresh accounts here - it's handled by the status interval
                     return;
                 }
                 
@@ -485,36 +596,50 @@ async function showQRCode(accountId) {
             await updateQRCode();
         }, 1000);
         
-        // Auto-retry QR load every 3 seconds if no QR found
+        // Auto-check connection status every 8 seconds (reduced frequency)
         let retryCount = 0;
-        const maxRetries = 10;
-        const retryInterval = setInterval(async () => {
-            const account = await apiCall(`/api/accounts/${accountId}`);
-            if (account.status === 'connected') {
-                clearInterval(retryInterval);
-                modal.hide();
-                showAlert('✅ WhatsApp berhasil terhubung!', 'success');
-                loadAccounts();
-            } else if (account.qr_code || retryCount >= maxRetries) {
-                clearInterval(retryInterval);
-                if (retryCount >= maxRetries && !account.qr_code) {
+        const maxRetries = 15; // Reduced max retries since interval is longer
+        currentStatusInterval = setInterval(async () => {
+            try {
+                const account = await apiCall(`/api/accounts/${accountId}`);
+                console.log(`Checking account ${accountId} status:`, account.status); // Debug log
+                
+                if (account.status === 'connected') {
+                    clearInterval(currentStatusInterval);
+                    currentStatusInterval = null;
+                    modal.hide();
+                    showAlert('✅ WhatsApp berhasil terhubung!', 'success');
+                    // Only refresh accounts once when connected, not on every check
+                    setTimeout(() => loadAccounts(), 1000);
+                    return;
+                } 
+                
+                // Update QR code display (without calling loadAccounts)
+                await updateQRCode();
+                
+                retryCount++;
+                if (retryCount >= maxRetries) {
+                    clearInterval(currentStatusInterval);
+                    currentStatusInterval = null;
                     container.innerHTML = `
                         <div class="text-center text-warning">
                             <i class="fas fa-clock fa-3x mb-3"></i>
-                            <p>QR Code tidak muncul setelah ${maxRetries} percobaan</p>
-                            <button class="btn btn-primary" onclick="updateQRCode()">Coba Lagi</button>
+                            <p>Timeout setelah ${maxRetries} percobaan (${maxRetries * 8} detik)</p>
+                            <button class="btn btn-primary" onclick="location.reload()">Refresh Halaman</button>
                         </div>
                     `;
                 }
-            } else {
-                retryCount++;
-                await updateQRCode();
+            } catch (error) {
+                console.error('Error checking account status:', error);
             }
-        }, 3000);
+        }, 8000);
         
-        // Clear retry interval when modal is closed
+        // Clear status interval when modal is closed
         document.getElementById('qrModal').addEventListener('hidden.bs.modal', () => {
-            clearInterval(retryInterval);
+            if (currentStatusInterval) {
+                clearInterval(currentStatusInterval);
+                currentStatusInterval = null;
+            }
         }, { once: true });
         
         // Setup manual refresh button
@@ -547,6 +672,285 @@ async function loadContacts() {
 async function loadTemplates() {
     // TODO: Implement templates loading
     console.log('Loading templates...');
+}
+
+// ========================= MESSAGING FUNCTIONS =========================
+
+async function loadMessagesPage() {
+    try {
+        // Load connected accounts for dropdown
+        const accounts = await apiCall('/api/accounts');
+        const connectedAccounts = accounts.filter(acc => acc.status === 'connected');
+        
+        const fromAccountSelect = document.getElementById('fromAccount');
+        fromAccountSelect.innerHTML = '<option value="">Pilih akun WhatsApp...</option>';
+        
+        connectedAccounts.forEach(account => {
+            const option = document.createElement('option');
+            option.value = account.id;
+            option.textContent = `${account.name} (${account.phone || 'Unknown'})`;
+            fromAccountSelect.appendChild(option);
+        });
+        
+        if (connectedAccounts.length === 0) {
+            showAlert('Tidak ada akun WhatsApp yang terhubung. Silakan hubungkan akun terlebih dahulu.', 'warning');
+        }
+        
+    } catch (error) {
+        console.error('Error loading messages page:', error);
+        showAlert('Error loading messages page: ' + error.message, 'danger');
+    }
+}
+
+async function sendMessage() {
+    try {
+        const fromAccount = document.getElementById('fromAccount').value;
+        const toNumber = document.getElementById('toNumber').value;
+        const messageText = document.getElementById('messageText').value;
+        const mediaFile = document.getElementById('mediaFile').files[0];
+        const isScheduled = document.getElementById('scheduleMessage').checked;
+        
+        // Validate required fields (either message text OR media file)
+        if (!fromAccount || !toNumber || (!messageText.trim() && !mediaFile)) {
+            showAlert('Mohon lengkapi field yang diperlukan (dari akun, nomor tujuan, dan pesan atau media)', 'warning');
+            return;
+        }
+        
+        // Validate phone number format
+        const phoneRegex = /^[0-9]{10,15}$/;
+        if (!phoneRegex.test(toNumber)) {
+            showAlert('Format nomor tidak valid. Gunakan format: 628123456789', 'warning');
+            return;
+        }
+        
+        // Show loading state
+        const submitBtn = document.querySelector('#sendMessageForm button[type="submit"]');
+        const originalText = submitBtn.innerHTML;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Mengirim...';
+        submitBtn.disabled = true;
+        
+        let result;
+        
+        if (mediaFile) {
+            // Send with media using FormData
+            const formData = new FormData();
+            formData.append('fromAccountId', fromAccount);
+            formData.append('toNumber', toNumber);
+            formData.append('message', messageText.trim());
+            formData.append('media', mediaFile);
+            
+            if (isScheduled) {
+                const scheduleDate = document.getElementById('scheduleDate').value;
+                const scheduleTime = document.getElementById('scheduleTime').value;
+                
+                if (!scheduleDate || !scheduleTime) {
+                    showAlert('Mohon tentukan tanggal dan waktu untuk pesan terjadwal', 'warning');
+                    submitBtn.innerHTML = originalText;
+                    submitBtn.disabled = false;
+                    return;
+                }
+                
+                formData.append('scheduledAt', `${scheduleDate} ${scheduleTime}`);
+            }
+            
+            result = await apiCall('/api/messages/send-media', {
+                method: 'POST',
+                body: formData
+            });
+        } else {
+            // Send text-only message
+            const messageData = {
+                fromAccountId: fromAccount,
+                toNumber: toNumber,
+                message: messageText.trim()
+            };
+            
+            if (isScheduled) {
+                const scheduleDate = document.getElementById('scheduleDate').value;
+                const scheduleTime = document.getElementById('scheduleTime').value;
+                
+                if (!scheduleDate || !scheduleTime) {
+                    showAlert('Mohon tentukan tanggal dan waktu untuk pesan terjadwal', 'warning');
+                    submitBtn.innerHTML = originalText;
+                    submitBtn.disabled = false;
+                    return;
+                }
+                
+                messageData.scheduledAt = `${scheduleDate} ${scheduleTime}`;
+            }
+            
+            result = await apiCall('/api/messages/send', {
+                method: 'POST',
+                body: JSON.stringify(messageData)
+            });
+        }
+        
+        // Reset form
+        document.getElementById('sendMessageForm').reset();
+        document.getElementById('messagePreview').textContent = 'Preview pesan akan muncul di sini...';
+        document.getElementById('charCount').textContent = '0';
+        clearMediaSelection();
+        
+        showAlert('✅ Pesan berhasil dikirim!', 'success');
+        
+        // Restore button
+        submitBtn.innerHTML = originalText;
+        submitBtn.disabled = false;
+        
+    } catch (error) {
+        console.error('Error sending message:', error);
+        showAlert('Error mengirim pesan: ' + error.message, 'danger');
+        
+        // Restore button on error
+        const submitBtn = document.querySelector('#sendMessageForm button[type="submit"]');
+        submitBtn.innerHTML = '<i class="fas fa-paper-plane me-2"></i>Kirim Pesan';
+        submitBtn.disabled = false;
+    }
+}
+
+function updateMessagePreview() {
+    const messageText = document.getElementById('messageText').value;
+    const preview = document.getElementById('messagePreview');
+    
+    if (messageText.trim()) {
+        preview.textContent = messageText;
+        preview.classList.remove('text-muted');
+        preview.classList.add('text-dark');
+    } else {
+        preview.textContent = 'Preview pesan akan muncul di sini...';
+        preview.classList.remove('text-dark');
+        preview.classList.add('text-muted');
+    }
+}
+
+function updateCharCount() {
+    const messageText = document.getElementById('messageText').value;
+    const charCount = document.getElementById('charCount');
+    const length = messageText.length;
+    
+    charCount.textContent = length;
+    
+    // Color coding for character count
+    if (length > 1000) {
+        charCount.className = 'text-danger fw-bold';
+    } else if (length > 500) {
+        charCount.className = 'text-warning fw-bold';
+    } else {
+        charCount.className = 'text-success';
+    }
+}
+
+function insertTemplate(type) {
+    const messageTextArea = document.getElementById('messageText');
+    let template = '';
+    
+    switch(type) {
+        case 'greeting':
+            template = 'Halo! Selamat pagi/siang/sore. Semoga hari Anda menyenangkan! 😊';
+            break;
+        case 'promo':
+            template = '🎉 PROMO SPESIAL! Dapatkan diskon hingga 50% untuk semua produk pilihan. Jangan sampai terlewat! Periode terbatas. Info lengkap: [link]';
+            break;
+        case 'reminder':
+            template = '⏰ Pengingat: Jangan lupa untuk [kegiatan/event]. Waktu: [tanggal dan waktu]. Terima kasih!';
+            break;
+        case 'thanks':
+            template = '🙏 Terima kasih banyak atas kepercayaan Anda. Kami sangat menghargai dukungan Anda. Semoga hari Anda berkah!';
+            break;
+    }
+    
+    messageTextArea.value = template;
+    messageTextArea.focus();
+    updateMessagePreview();
+    updateCharCount();
+}
+
+// Media upload functions
+function handleMediaSelection() {
+    const fileInput = document.getElementById('mediaFile');
+    const file = fileInput.files[0];
+    
+    if (file) {
+        // Validate file size (max 16MB for WhatsApp)
+        const maxSize = 16 * 1024 * 1024; // 16MB
+        if (file.size > maxSize) {
+            showAlert('File terlalu besar. Maksimal 16MB untuk WhatsApp.', 'warning');
+            fileInput.value = '';
+            return;
+        }
+        
+        // Show media preview
+        displayMediaPreview(file);
+        
+        // Update form validation
+        updateFormValidation();
+    }
+}
+
+function displayMediaPreview(file) {
+    const mediaPreview = document.getElementById('mediaPreview');
+    const mediaIcon = document.getElementById('mediaIcon');
+    const mediaName = document.getElementById('mediaName');
+    const mediaSize = document.getElementById('mediaSize');
+    
+    // Get file icon based on type
+    let iconClass = 'fas fa-file';
+    if (file.type.startsWith('image/')) {
+        iconClass = 'fas fa-image text-success';
+    } else if (file.type.startsWith('video/')) {
+        iconClass = 'fas fa-video text-primary';
+    } else if (file.type.startsWith('audio/')) {
+        iconClass = 'fas fa-music text-info';
+    } else if (file.type.includes('pdf')) {
+        iconClass = 'fas fa-file-pdf text-danger';
+    } else if (file.type.includes('document') || file.type.includes('word')) {
+        iconClass = 'fas fa-file-word text-primary';
+    }
+    
+    mediaIcon.innerHTML = `<i class="${iconClass} fa-2x"></i>`;
+    mediaName.textContent = file.name;
+    mediaSize.textContent = formatFileSize(file.size);
+    
+    mediaPreview.style.display = 'block';
+}
+
+function clearMediaSelection() {
+    const fileInput = document.getElementById('mediaFile');
+    const mediaPreview = document.getElementById('mediaPreview');
+    
+    fileInput.value = '';
+    mediaPreview.style.display = 'none';
+    
+    // Update form validation
+    updateFormValidation();
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+function updateFormValidation() {
+    const messageText = document.getElementById('messageText').value.trim();
+    const mediaFile = document.getElementById('mediaFile').files[0];
+    
+    // Either message text OR media file is required
+    const messageTextArea = document.getElementById('messageText');
+    
+    if (mediaFile) {
+        // If media is selected, message text becomes optional
+        messageTextArea.required = false;
+        messageTextArea.placeholder = 'Caption untuk media (opsional)...';
+    } else {
+        // If no media, message text is required
+        messageTextArea.required = true;
+        messageTextArea.placeholder = 'Tulis pesan Anda di sini...';
+    }
 }
 
 async function loadCampaigns() {
@@ -592,6 +996,46 @@ function setupEventListeners() {
         e.preventDefault();
         addAccount();
     });
+    
+    // Message form handler
+    const sendMessageForm = document.getElementById('sendMessageForm');
+    if (sendMessageForm) {
+        sendMessageForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            sendMessage();
+        });
+    }
+    
+    // Message text change handler for preview
+    const messageTextArea = document.getElementById('messageText');
+    if (messageTextArea) {
+        messageTextArea.addEventListener('input', function() {
+            updateMessagePreview();
+            updateCharCount();
+        });
+    }
+    
+    // Schedule message checkbox
+    const scheduleCheckbox = document.getElementById('scheduleMessage');
+    if (scheduleCheckbox) {
+        scheduleCheckbox.addEventListener('change', function() {
+            document.getElementById('scheduleOptions').style.display = 
+                this.checked ? 'block' : 'none';
+        });
+    }
+    
+    // Media upload handlers
+    const mediaFileInput = document.getElementById('mediaFile');
+    const clearMediaBtn = document.getElementById('clearMedia');
+    const mediaPreview = document.getElementById('mediaPreview');
+    
+    if (mediaFileInput) {
+        mediaFileInput.addEventListener('change', handleMediaSelection);
+    }
+    
+    if (clearMediaBtn) {
+        clearMediaBtn.addEventListener('click', clearMediaSelection);
+    }
     
     // Cleanup on page unload
     window.addEventListener('beforeunload', () => {

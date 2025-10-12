@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Media Upload Test</title>
+    <style>
+        body { padding: 20px; font-family: Arial, sans-serif; }
+        .form-group { margin: 15px 0; }
+        label { display: block; margin-bottom: 5px; }
+        input, select, textarea { width: 100%; padding: 8px; margin-bottom: 10px; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; cursor: pointer; }
+        .result { margin-top: 20px; padding: 10px; border: 1px solid #ddd; }
+        .error { background-color: #f8d7da; border-color: #f5c6cb; color: #721c24; }
+        .success { background-color: #d4edda; border-color: #c3e6cb; color: #155724; }
+    </style>
+</head>
+<body>
+    <h2>Media Message Test</h2>
+    
+    <form id="mediaForm">
+        <div class="form-group">
+            <label>From Account ID:</label>
+            <input type="text" id="fromAccountId" value="11" required>
+        </div>
+        
+        <div class="form-group">
+            <label>To Number:</label>
+            <input type="text" id="toNumber" value="628123456789" required>
+        </div>
+        
+        <div class="form-group">
+            <label>Message (Caption):</label>
+            <textarea id="message" placeholder="Optional caption for media"></textarea>
+        </div>
+        
+        <div class="form-group">
+            <label>Media File:</label>
+            <input type="file" id="mediaFile" accept="image/*,video/*,audio/*,.pdf,.doc,.docx" required>
+        </div>
+        
+        <button type="submit">Send Media Message</button>
+    </form>
+    
+    <div id="result"></div>
+    
+    <script>
+        document.getElementById('mediaForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<div>Sending...</div>';
+            
+            const formData = new FormData();
+            formData.append('fromAccountId', document.getElementById('fromAccountId').value);
+            formData.append('toNumber', document.getElementById('toNumber').value);
+            formData.append('message', document.getElementById('message').value);
+            formData.append('media', document.getElementById('mediaFile').files[0]);
+            
+            try {
+                const response = await fetch('/api/messages/send-media', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    resultDiv.innerHTML = `<div class="result success">
+                        <strong>Success!</strong><br>
+                        ${JSON.stringify(result, null, 2)}
+                    </div>`;
+                } else {
+                    resultDiv.innerHTML = `<div class="result error">
+                        <strong>Error!</strong><br>
+                        ${result.error || 'Unknown error'}
+                    </div>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="result error">
+                    <strong>Network Error!</strong><br>
+                    ${error.message}
+                </div>`;
+            }
+        });
+    </script>
+</body>
+</html>

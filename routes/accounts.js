@@ -113,6 +113,38 @@ router.post('/:id/connect', async (req, res) => {
     }
 });
 
+// Force reconnect account (aggressive reconnect with new QR)
+router.post('/:id/force-reconnect', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const account = await database.query('SELECT * FROM accounts WHERE id = ?', [id]);
+        
+        if (!account.length) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+        
+        // Log activity
+        await database.query(
+            'INSERT INTO activity_logs (account_id, action, description) VALUES (?, ?, ?)',
+            [id, 'force_reconnect', 'Force reconnection initiated - generating new QR code']
+        );
+        
+        await whatsappService.forceReconnectAccount(id);
+        
+        res.json({ 
+            message: 'Force reconnection initiated. New QR code will be generated.',
+            note: 'All session files have been cleared for fresh authentication.'
+        });
+    } catch (error) {
+        console.error('Force reconnect error:', error);
+        res.status(500).json({ 
+            error: 'Force reconnection failed',
+            message: error.message 
+        });
+    }
+});
+
 // Disconnect account
 router.post('/:id/disconnect', async (req, res) => {
     try {

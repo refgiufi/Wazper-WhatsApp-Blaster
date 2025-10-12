@@ -2,7 +2,9 @@ const {
     default: makeWASocket,
     DisconnectReason,
     useMultiFileAuthState,
-    delay
+    delay,
+    generateWAMessageFromContent,
+    proto
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const fs = require('fs-extra');
@@ -15,6 +17,12 @@ class WhatsAppService {
         this.sessions = new Map();
         this.stores = new Map();
         this.logger = pino({ level: 'warn' });
+        this.retryCount = new Map();
+        this.connectionAttempts = new Map();
+        this.lastConnectionTime = new Map();
+        
+        // Rate limiting: max 1 connection attempt per 30 seconds per account
+        this.CONNECTION_COOLDOWN = 30000; // 30 seconds
     }
 
     async initialize() {
@@ -22,24 +30,54 @@ class WhatsAppService {
             // Ensure sessions directory exists
             await fs.ensureDir('./sessions');
             
-            // Load existing accounts from database
-            const accounts = await database.query(
-                'SELECT * FROM accounts WHERE status != "disconnected"'
-            );
-            
-            for (const account of accounts) {
-                await this.connectAccount(account.id);
+            // Load existing accounts from database with better error handling
+            try {
+                const accounts = await database.query(
+                    'SELECT * FROM accounts WHERE status != "disconnected"'
+                );
+                
+                // Connect accounts one by one with individual error handling
+                for (const account of accounts) {
+                    try {
+                        await this.connectAccount(account.id);
+                    } catch (accountError) {
+                        console.error(`❌ Failed to connect account ${account.id}:`, accountError.message);
+                        // Update account status to error but don't crash the whole service
+                        try {
+                            await database.query(
+                                'UPDATE accounts SET status = "error" WHERE id = ?',
+                                [account.id]
+                            );
+                        } catch (dbError) {
+                            console.error('Failed to update account status:', dbError);
+                        }
+                    }
+                }
+            } catch (dbError) {
+                console.error('❌ Failed to load accounts from database:', dbError.message);
             }
             
             console.log('✅ WhatsApp service initialized');
         } catch (error) {
             console.error('❌ Failed to initialize WhatsApp service:', error);
-            throw error;
+            // Don't throw error to prevent server crash
+            console.log('⚠️ WhatsApp service started with limited functionality');
         }
     }
 
     async connectAccount(accountId) {
         try {
+            // Rate limiting check
+            const lastAttempt = this.lastConnectionTime.get(accountId);
+            const now = Date.now();
+            
+            if (lastAttempt && (now - lastAttempt) < this.CONNECTION_COOLDOWN) {
+                const remainingTime = Math.ceil((this.CONNECTION_COOLDOWN - (now - lastAttempt)) / 1000);
+                throw new Error(`Rate limited: Wait ${remainingTime}s before reconnecting account ${accountId}`);
+            }
+            
+            this.lastConnectionTime.set(accountId, now);
+            
             const account = await database.query(
                 'SELECT * FROM accounts WHERE id = ?', 
                 [accountId]
@@ -62,7 +100,22 @@ class WhatsAppService {
                 logger: this.logger,
                 auth: state,
                 printQRInTerminal: false,
-                browser: ['Wazper', 'Chrome', '1.0.0']
+                browser: ['Wazper', 'Chrome', '1.0.0'],
+                // Connection stability settings
+                keepAliveIntervalMs: 30000, // Keep-alive setiap 30 detik
+                connectTimeoutMs: 60000,    // Timeout connection 60 detik
+                defaultQueryTimeoutMs: 60000, // Query timeout 60 detik
+                // Retry settings
+                retryRequestDelayMs: 250,   // Delay retry request
+                maxMsgRetryCount: 3,        // Maksimal retry message
+                // Browser settings untuk stabilitas
+                markOnlineOnConnect: false,  // Jangan set online otomatis
+                syncFullHistory: false,      // Jangan sync history penuh (menghemat bandwidth)
+                // Connection options
+                options: {
+                    keepAlive: true,
+                    timeout: 60000
+                }
             });
 
             // Event handlers
@@ -122,18 +175,37 @@ class WhatsAppService {
             }
 
             if (connection === 'close') {
-                const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                const errorMessage = lastDisconnect?.error?.message || 'Unknown error';
+                
+                // Clean up current session
+                this.sessions.delete(accountId);
+                
+                // Determine if we should reconnect based on error type
+                const shouldReconnect = this.shouldAttemptReconnect(statusCode, errorMessage);
                 
                 if (shouldReconnect) {
-                    console.log(`Reconnecting account ${accountId}...`);
-                    await this.connectAccount(accountId);
+                    console.log(`📱 Account ${accountId} disconnected. Reason: ${this.getDisconnectReasonText(statusCode)} - ${errorMessage}`);
+                    
+                    // Only schedule reconnect if not due to rate limiting or permanent errors
+                    if (!this.isPermanentError(statusCode)) {
+                        await this.scheduleReconnect(accountId, statusCode);
+                    } else {
+                        console.log(`❌ Permanent error detected for account ${accountId}. Manual intervention required.`);
+                        await database.query(
+                            'UPDATE accounts SET status = "error", qr_code = NULL, updated_at = NOW() WHERE id = ?',
+                            [accountId]
+                        );
+                    }
                 } else {
-                    console.log(`Account ${accountId} logged out`);
+                    console.log(`Account ${accountId} logged out properly`);
                     await database.query(
                         'UPDATE accounts SET status = "disconnected", qr_code = NULL, updated_at = NOW() WHERE id = ?',
                         [accountId]
                     );
-                    this.sessions.delete(accountId);
+                    // Clean up retry tracking
+                    this.retryCount.delete(accountId);
+                    this.lastConnectionTime.delete(accountId);
                 }
             } else if (connection === 'open') {
                 console.log(`Account ${accountId} connected successfully`);
@@ -146,8 +218,9 @@ class WhatsAppService {
                     // Try to get user info
                     const user = sock.user;
                     if (user && user.id) {
-                        // Extract phone number from user ID (format: number@s.whatsapp.net)
-                        detectedPhone = user.id.split('@')[0];
+                        // Extract phone number from user ID (format: number:device@s.whatsapp.net)
+                        const fullId = user.id.split('@')[0]; // Get part before @
+                        detectedPhone = fullId.split(':')[0]; // Remove device ID part (:XX)
                         console.log(`Detected phone number: ${detectedPhone}`);
                     }
                 } catch (infoError) {
@@ -205,9 +278,19 @@ class WhatsAppService {
         }
     }
 
-    async sendMessage(accountId, phone, message, mediaPath = null) {
+    async sendMessage(accountId, phone, message, mediaPath = null, mimeType = null, originalName = null) {
         try {
-            const sock = this.sessions.get(accountId);
+            // Convert accountId to string to match session keys (sessions are stored as strings)
+            const stringAccountId = String(accountId);
+            
+            // DEBUG: Check sessions
+            console.log(`🔍 Session debug:`);
+            console.log(`  - Raw accountId: "${accountId}" (type: ${typeof accountId})`);
+            console.log(`  - String accountId: "${stringAccountId}" (type: ${typeof stringAccountId})`);
+            console.log(`  - Available session keys:`, Array.from(this.sessions.keys()));
+            console.log(`  - Session exists:`, this.sessions.has(stringAccountId));
+            
+            const sock = this.sessions.get(stringAccountId);
             
             if (!sock) {
                 throw new Error('Account not connected');
@@ -216,38 +299,119 @@ class WhatsAppService {
             // Format phone number
             const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
             
+            // DEBUG: Log all parameters
+            console.log(`🔍 sendMessage called with:`);
+            console.log(`  - accountId: ${accountId}`);
+            console.log(`  - phone: ${phone}`);
+            console.log(`  - message: "${message}"`);
+            console.log(`  - mediaPath: "${mediaPath}"`);
+            console.log(`  - mimeType: "${mimeType}"`);
+            console.log(`  - mediaPath type: ${typeof mediaPath}`);
+            console.log(`  - mediaPath boolean: ${!!mediaPath}`);
+            
             let messageContent = { text: message };
             
             if (mediaPath) {
-                const mediaBuffer = await fs.readFile(mediaPath);
-                const mimeType = this.getMimeType(mediaPath);
+                console.log(`📂 Processing media file: ${mediaPath}`);
                 
-                if (mimeType.startsWith('image/')) {
+                // Check if file exists
+                try {
+                    const fileStats = await fs.stat(mediaPath);
+                    console.log(`📊 File stats - Size: ${fileStats.size} bytes, isFile: ${fileStats.isFile()}`);
+                } catch (statError) {
+                    console.error(`❌ File stat error: ${statError.message}`);
+                    throw new Error(`Media file not found: ${mediaPath}`);
+                }
+                
+                // Read file
+                let mediaBuffer;
+                try {
+                    mediaBuffer = await fs.readFile(mediaPath);
+                    console.log(`📦 Media buffer loaded - Size: ${mediaBuffer.length} bytes`);
+                } catch (readError) {
+                    console.error(`❌ File read error: ${readError.message}`);
+                    throw new Error(`Failed to read media file: ${readError.message}`);
+                }
+                
+                // Use provided mimeType or detect from path
+                const finalMimeType = mimeType || this.getMimeType(mediaPath);
+                console.log(`🏷️ Using MIME type: ${finalMimeType}`);
+                
+                // Use standard Baileys format based on official documentation
+                console.log(`🔄 Using standard Baileys media format`);
+                
+                if (finalMimeType.startsWith('image/')) {
+                    console.log(`🖼️ Preparing image message (buffer format)`);
                     messageContent = {
-                        image: mediaBuffer,
-                        caption: message
+                        image: mediaBuffer
                     };
-                } else if (mimeType.startsWith('video/')) {
+                    if (message && message.trim()) {
+                        messageContent.caption = message.trim();
+                    }
+                    
+                } else if (finalMimeType.startsWith('video/')) {
+                    console.log(`🎥 Preparing video message (buffer format)`);
                     messageContent = {
-                        video: mediaBuffer,
-                        caption: message
+                        video: mediaBuffer
                     };
-                } else if (mimeType.startsWith('audio/')) {
+                    if (message && message.trim()) {
+                        messageContent.caption = message.trim();
+                    }
+                    
+                } else if (finalMimeType.startsWith('audio/')) {
+                    console.log(`🎵 Preparing audio message (buffer format)`);
                     messageContent = {
                         audio: mediaBuffer,
-                        mimetype: mimeType
+                        mimetype: finalMimeType,
+                        ptt: false
                     };
+                    
                 } else {
+                    console.log(`📄 Preparing document message (buffer format)`);
+                    
+                    // Use original filename if available, otherwise use path basename
+                    const fileName = originalName || path.basename(mediaPath);
+                    console.log(`📄 Using filename: "${fileName}"`);
+                    
                     messageContent = {
                         document: mediaBuffer,
-                        mimetype: mimeType,
-                        fileName: path.basename(mediaPath),
-                        caption: message
+                        mimetype: finalMimeType,
+                        fileName: fileName
                     };
+                    if (message && message.trim()) {
+                        messageContent.caption = message.trim();
+                    }
                 }
+                
+                console.log(`📋 Final message content structure:`, {
+                    type: Object.keys(messageContent)[0],
+                    hasCaption: !!messageContent.caption,
+                    bufferSize: mediaBuffer.length
+                });
             }
 
+            console.log(`🚀 Sending message to WhatsApp...`);
+            console.log(`📱 JID: ${jid}`);
+            console.log(`📝 Message content keys:`, Object.keys(messageContent));
+            
+            // Additional debug for media messages
+            if (messageContent.image) {
+                console.log(`🖼️ Image buffer size: ${messageContent.image.length} bytes`);
+            } else if (messageContent.video) {
+                console.log(`🎥 Video buffer size: ${messageContent.video.length} bytes`);
+            } else if (messageContent.audio) {
+                console.log(`🎵 Audio buffer size: ${messageContent.audio.length} bytes`);
+            } else if (messageContent.document) {
+                console.log(`📄 Document buffer size: ${messageContent.document.length} bytes`);
+            }
+            
             const result = await sock.sendMessage(jid, messageContent);
+            
+            console.log(`✅ WhatsApp sendMessage result:`, {
+                key: result.key,
+                messageTimestamp: result.messageTimestamp,
+                status: result.status
+            });
             
             // Log activity
             await database.query(
@@ -404,17 +568,306 @@ class WhatsAppService {
         return sock ? 'connected' : 'disconnected';
     }
 
+    async sendTextMessage(accountId, toNumber, message) {
+        try {
+            // Convert accountId to string to match session keys (sessions are stored as strings)
+            const stringAccountId = String(accountId);
+            const sock = this.sessions.get(stringAccountId);
+            
+            if (!sock) {
+                throw new Error(`Account ${accountId} is not connected`);
+            }
+            
+            // Format phone number for WhatsApp (add @s.whatsapp.net)
+            const formattedNumber = toNumber.includes('@') ? toNumber : `${toNumber}@s.whatsapp.net`;
+            
+            // Send message
+            const result = await sock.sendMessage(formattedNumber, { text: message });
+            
+            console.log(`Message sent from account ${accountId} to ${toNumber}`);
+            
+            return {
+                success: true,
+                messageId: result.key.id,
+                timestamp: result.messageTimestamp
+            };
+            
+        } catch (error) {
+            console.error(`Error sending message from account ${accountId}:`, error);
+            throw new Error(`Failed to send message: ${error.message}`);
+        }
+    }
+
+    async sendMediaMessage(accountId, toNumber, mediaFileOrPath, caption = '') {
+        console.log(`📎 Sending media message from account ${accountId} to ${toNumber}`);
+        console.log(`📁 Media input:`, mediaFileOrPath);
+        console.log(`💬 Caption: ${caption || '(no caption)'}`);
+        
+        try {
+            // Handle both file object and path string
+            let mediaPath, mimeType, originalName;
+            
+            if (typeof mediaFileOrPath === 'string') {
+                // Old format: just path
+                mediaPath = mediaFileOrPath;
+                mimeType = this.getMimeType(mediaPath);
+                originalName = null;
+            } else {
+                // New format: file object with mimetype
+                mediaPath = mediaFileOrPath.path;
+                mimeType = mediaFileOrPath.mimetype || this.getMimeType(mediaFileOrPath.originalname || mediaPath);
+                originalName = mediaFileOrPath.originalname;
+            }
+            
+            console.log(`🏷️ Using MIME type: ${mimeType}`);
+            console.log(`📄 Original filename: "${originalName}"`);
+            
+            // Use the existing sendMessage function that already supports media
+            const result = await this.sendMessage(accountId, toNumber, caption, mediaPath, mimeType, originalName);
+            
+            console.log(`✅ Media message sent successfully to ${toNumber}`);
+            return result;
+            
+        } catch (error) {
+            console.error(`❌ Failed to send media message to ${toNumber}:`, error.message);
+            throw error;
+        }
+    }
+
+    async scheduleReconnect(accountId, disconnectReason) {
+        // Initialize retry count if not exists
+        if (!this.retryCount) {
+            this.retryCount = new Map();
+        }
+        
+        const currentRetries = this.retryCount.get(accountId) || 0;
+        const maxRetries = 5; // Maksimal 5 kali retry
+        
+        if (currentRetries >= maxRetries) {
+            console.log(`❌ Account ${accountId} reached max retry attempts. Stopping reconnection.`);
+            await database.query(
+                'UPDATE accounts SET status = "error", updated_at = NOW() WHERE id = ?',
+                [accountId]
+            );
+            this.retryCount.delete(accountId);
+            return;
+        }
+        
+        // Exponential backoff: 5s, 15s, 45s, 135s, 405s
+        const delayMs = Math.min(5000 * Math.pow(3, currentRetries), 300000); // Max 5 minutes
+        
+        console.log(`🔄 Scheduling reconnect for account ${accountId} in ${delayMs/1000}s (attempt ${currentRetries + 1}/${maxRetries})`);
+        
+        // Update retry count
+        this.retryCount.set(accountId, currentRetries + 1);
+        
+        // Update database status
+        await database.query(
+            'UPDATE accounts SET status = "reconnecting", updated_at = NOW() WHERE id = ?',
+            [accountId]
+        );
+        
+        // Schedule reconnection with delay
+        setTimeout(async () => {
+            try {
+                console.log(`🔄 Attempting reconnection for account ${accountId}...`);
+                
+                // Clean up old session files to prevent corruption
+                await this.cleanSessionFiles(accountId);
+                
+                // Attempt reconnection
+                await this.connectAccount(accountId);
+                
+                // Reset retry count on successful connection
+                this.retryCount.delete(accountId);
+                
+            } catch (error) {
+                console.error(`❌ Reconnection failed for account ${accountId}:`, error.message);
+                
+                // Schedule next retry
+                await this.scheduleReconnect(accountId, disconnectReason);
+            }
+        }, delayMs);
+    }
+
+    async cleanSessionFiles(accountId, aggressive = false) {
+        try {
+            const sessionPath = path.join('./sessions', `session_${accountId}`);
+            
+            if (await fs.pathExists(sessionPath)) {
+                console.log(`🧹 Cleaning session files for account ${accountId} (aggressive: ${aggressive})`);
+                
+                if (aggressive) {
+                    // For manual reconnect - clean everything to force new QR
+                    console.log(`🗑️ Aggressive cleanup for account ${accountId} - removing all session files`);
+                    await fs.remove(sessionPath);
+                    await fs.ensureDir(sessionPath);
+                } else {
+                    // For auto-reconnect - keep credentials, clean problematic files
+                    const filesToClean = [
+                        'app-state-sync-version.json',
+                        'session-*.json',
+                        'sender-keys.json'
+                    ];
+                    
+                    for (const filePattern of filesToClean) {
+                        try {
+                            const files = await fs.readdir(sessionPath);
+                            for (const file of files) {
+                                if (filePattern.includes('*') ? 
+                                    file.includes(filePattern.replace('*', '')) : 
+                                    file === filePattern) {
+                                    await fs.unlink(path.join(sessionPath, file));
+                                    console.log(`Cleaned: ${file}`);
+                                }
+                            }
+                        } catch (cleanError) {
+                            // Ignore individual file errors
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.error(`Error cleaning session files for account ${accountId}:`, error);
+        }
+    }
+
+    async forceReconnectAccount(accountId) {
+        console.log(`🔄 Force reconnecting account ${accountId}...`);
+        
+        try {
+            // Disconnect existing session if any
+            const existingSock = this.sessions.get(accountId);
+            if (existingSock) {
+                try {
+                    await existingSock.logout();
+                } catch (logoutError) {
+                    console.log(`Logout error (expected):`, logoutError.message);
+                }
+                this.sessions.delete(accountId);
+            }
+            
+            // Clean up tracking
+            this.retryCount.delete(accountId);
+            this.lastConnectionTime.delete(accountId);
+            
+            // Aggressive session cleanup to force new QR
+            await this.cleanSessionFiles(accountId, true);
+            
+            // Update database status
+            await database.query(
+                'UPDATE accounts SET status = "connecting", qr_code = NULL, updated_at = NOW() WHERE id = ?',
+                [accountId]
+            );
+            
+            // Start fresh connection
+            await this.connectAccount(accountId);
+            
+            console.log(`✅ Force reconnection initiated for account ${accountId}`);
+            
+        } catch (error) {
+            console.error(`❌ Force reconnection failed for account ${accountId}:`, error);
+            
+            await database.query(
+                'UPDATE accounts SET status = "error", updated_at = NOW() WHERE id = ?',
+                [accountId]
+            );
+            
+            throw error;
+        }
+    }
+
+    shouldAttemptReconnect(statusCode, errorMessage) {
+        // Don't reconnect if user explicitly logged out
+        if (statusCode === DisconnectReason.loggedOut) {
+            return false;
+        }
+        
+        // Don't reconnect on rate limiting errors (let them reconnect manually)
+        if (errorMessage && errorMessage.includes('rate limit')) {
+            return false;
+        }
+        
+        // Don't reconnect on banned/blocked errors
+        if (statusCode === DisconnectReason.forbidden || 
+            statusCode === DisconnectReason.banned) {
+            return false;
+        }
+        
+        return true;
+    }
+
+    isPermanentError(statusCode) {
+        const permanentErrors = [
+            DisconnectReason.forbidden,
+            DisconnectReason.banned,
+            DisconnectReason.multideviceMismatch
+        ];
+        
+        return permanentErrors.includes(statusCode);
+    }
+
+    getDisconnectReasonText(statusCode) {
+        const reasons = {
+            [DisconnectReason.badSession]: 'Bad Session',
+            [DisconnectReason.connectionClosed]: 'Connection Closed',
+            [DisconnectReason.connectionLost]: 'Connection Lost',
+            [DisconnectReason.connectionReplaced]: 'Connection Replaced',
+            [DisconnectReason.loggedOut]: 'Logged Out',
+            [DisconnectReason.restart]: 'Restart Required',
+            [DisconnectReason.timedOut]: 'Connection Timed Out',
+            [DisconnectReason.forbidden]: 'Forbidden/Blocked',
+            [DisconnectReason.banned]: 'Account Banned',
+            [DisconnectReason.multideviceMismatch]: 'Multi-device Mismatch'
+        };
+        
+        return reasons[statusCode] || `Unknown (${statusCode})`;
+    }
+
+    async disconnectAccount(accountId) {
+        try {
+            const sock = this.sessions.get(accountId);
+            if (sock) {
+                // Graceful logout
+                await sock.logout();
+                console.log(`Account ${accountId} logged out gracefully`);
+            }
+            
+            // Clean up tracking
+            this.sessions.delete(accountId);
+            this.retryCount.delete(accountId);
+            this.lastConnectionTime.delete(accountId);
+            
+            // Update database
+            await database.query(
+                'UPDATE accounts SET status = "disconnected", qr_code = NULL, updated_at = NOW() WHERE id = ?',
+                [accountId]
+            );
+            
+        } catch (error) {
+            console.error(`Error disconnecting account ${accountId}:`, error);
+        }
+    }
+
     async disconnectAll() {
+        console.log('🛑 Gracefully disconnecting all WhatsApp accounts...');
+        
         for (const [accountId, sock] of this.sessions) {
             try {
                 await sock.logout();
-                console.log(`Disconnected account ${accountId}`);
+                console.log(`Account ${accountId} logged out`);
             } catch (error) {
                 console.error(`Error disconnecting account ${accountId}:`, error);
             }
         }
+        
+        // Clean up all tracking maps
         this.sessions.clear();
         this.stores.clear();
+        this.retryCount.clear();
+        this.lastConnectionTime.clear();
+        
+        console.log('✅ All WhatsApp accounts disconnected');
     }
 }
 

@@ -22,6 +22,9 @@
                 <a href="#accounts" class="list-group-item list-group-item-action bg-dark text-white" data-section="accounts">
                     <i class="fas fa-users me-2"></i>Akun WhatsApp
                 </a>
+                <a href="#messages" class="list-group-item list-group-item-action bg-dark text-white" data-section="messages">
+                    <i class="fas fa-paper-plane me-2"></i>Kirim Pesan
+                </a>
                 <a href="#contacts" class="list-group-item list-group-item-action bg-dark text-white" data-section="contacts">
                     <i class="fas fa-address-book me-2"></i>Kontak
                 </a>
@@ -203,6 +206,145 @@
                                     </thead>
                                     <tbody></tbody>
                                 </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Messages Section -->
+                <div id="messages-section" class="content-section" style="display: none;">
+                    <div class="d-flex justify-content-between align-items-center mb-4">
+                        <h2><i class="fas fa-paper-plane me-2"></i>Kirim Pesan WhatsApp</h2>
+                    </div>
+
+                    <div class="row">
+                        <!-- Form Kirim Pesan -->
+                        <div class="col-lg-8">
+                            <div class="card shadow">
+                                <div class="card-header bg-primary text-white">
+                                    <h5 class="mb-0"><i class="fas fa-envelope me-2"></i>Compose Message</h5>
+                                </div>
+                                <div class="card-body">
+                                    <form id="sendMessageForm">
+                                        <div class="row mb-3">
+                                            <div class="col-md-6">
+                                                <label for="fromAccount" class="form-label">Dari Akun</label>
+                                                <select class="form-select" id="fromAccount" required>
+                                                    <option value="">Pilih akun WhatsApp...</option>
+                                                </select>
+                                            </div>
+                                            <div class="col-md-6">
+                                                <label for="toNumber" class="form-label">Ke Nomor</label>
+                                                <input type="text" class="form-control" id="toNumber" 
+                                                       placeholder="628123456789" required>
+                                                <div class="form-text">Format: 628123456789 (tanpa +, spasi, atau tanda hubung)</div>
+                                            </div>
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <label for="messageText" class="form-label">Pesan</label>
+                                            <textarea class="form-control" id="messageText" rows="6" 
+                                                      placeholder="Tulis pesan Anda di sini..."></textarea>
+                                            <div class="form-text">
+                                                <span id="charCount">0</span> karakter
+                                            </div>
+                                        </div>
+
+                                        <!-- Media Upload Section -->
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                <i class="fas fa-paperclip me-2"></i>Lampiran Media (Opsional)
+                                            </label>
+                                            <div class="input-group">
+                                                <input type="file" class="form-control" id="mediaFile" 
+                                                       accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt">
+                                                <button type="button" class="btn btn-outline-secondary" id="clearMedia">
+                                                    <i class="fas fa-times"></i>
+                                                </button>
+                                            </div>
+                                            <div class="form-text">
+                                                Supported: Gambar (JPG, PNG, GIF), Video (MP4), Audio (MP3, OGG), Dokumen (PDF, DOC, TXT)
+                                            </div>
+                                            
+                                            <!-- Media Preview -->
+                                            <div id="mediaPreview" style="display: none;" class="mt-2 p-2 border rounded">
+                                                <div class="d-flex align-items-center">
+                                                    <div id="mediaIcon" class="me-2"></div>
+                                                    <div>
+                                                        <div id="mediaName" class="fw-bold"></div>
+                                                        <div id="mediaSize" class="text-muted small"></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="mb-3">
+                                            <div class="form-check">
+                                                <input class="form-check-input" type="checkbox" id="scheduleMessage">
+                                                <label class="form-check-label" for="scheduleMessage">
+                                                    Jadwalkan Pesan
+                                                </label>
+                                            </div>
+                                        </div>
+
+                                        <div class="mb-3" id="scheduleOptions" style="display: none;">
+                                            <div class="row">
+                                                <div class="col-md-6">
+                                                    <label for="scheduleDate" class="form-label">Tanggal</label>
+                                                    <input type="date" class="form-control" id="scheduleDate">
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label for="scheduleTime" class="form-label">Waktu</label>
+                                                    <input type="time" class="form-control" id="scheduleTime">
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="d-grid">
+                                            <button type="submit" class="btn btn-primary btn-lg">
+                                                <i class="fas fa-paper-plane me-2"></i>Kirim Pesan
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Preview & Quick Actions -->
+                        <div class="col-lg-4">
+                            <div class="card shadow mb-3">
+                                <div class="card-header bg-success text-white">
+                                    <h6 class="mb-0"><i class="fas fa-eye me-2"></i>Preview Pesan</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="bg-light p-3 rounded" style="min-height: 150px;">
+                                        <div id="messagePreview" class="text-muted">
+                                            Preview pesan akan muncul di sini...
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="card shadow">
+                                <div class="card-header bg-info text-white">
+                                    <h6 class="mb-0"><i class="fas fa-lightning-bolt me-2"></i>Quick Templates</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="d-grid gap-2">
+                                        <button class="btn btn-outline-primary btn-sm" onclick="insertTemplate('greeting')">
+                                            👋 Salam Pembuka
+                                        </button>
+                                        <button class="btn btn-outline-primary btn-sm" onclick="insertTemplate('promo')">
+                                            🎉 Pesan Promo
+                                        </button>
+                                        <button class="btn btn-outline-primary btn-sm" onclick="insertTemplate('reminder')">
+                                            ⏰ Pengingat
+                                        </button>
+                                        <button class="btn btn-outline-primary btn-sm" onclick="insertTemplate('thanks')">
+                                            🙏 Terima Kasih
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

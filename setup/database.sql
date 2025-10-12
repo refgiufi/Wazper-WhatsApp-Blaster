@@ -9,7 +9,7 @@ CREATE TABLE accounts (
     id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     phone VARCHAR(20) NULL UNIQUE,
-    status ENUM('disconnected', 'connecting', 'connected', 'error') DEFAULT 'disconnected',
+    status ENUM('disconnected', 'connecting', 'connected', 'reconnecting', 'error') DEFAULT 'disconnected',
     qr_code TEXT NULL,
     session_data LONGTEXT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -62,11 +62,12 @@ CREATE TABLE campaigns (
 -- Table untuk menyimpan detail pengiriman per kontak
 CREATE TABLE campaign_messages (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    campaign_id INT NOT NULL,
-    contact_id INT NOT NULL,
+    campaign_id INT NULL, -- Allow NULL for single messages (not part of campaign)
+    contact_id INT NULL,  -- Allow NULL for single messages (not from contact list)
     phone VARCHAR(20) NOT NULL,
-    message_text TEXT NOT NULL,
+    message_text TEXT NULL, -- Allow NULL when only sending media
     media_path VARCHAR(255) NULL,
+    media_type ENUM('image', 'document', 'video', 'audio') NULL,
     status ENUM('pending', 'sent', 'failed', 'delivered', 'read') DEFAULT 'pending',
     error_message TEXT NULL,
     sent_at TIMESTAMP NULL,
