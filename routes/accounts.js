@@ -113,6 +113,55 @@ router.post('/:id/connect', async (req, res) => {
     }
 });
 
+// Fresh reconnect - like adding new account but reusing existing record
+router.post('/:id/fresh-connect', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const account = await database.query('SELECT * FROM accounts WHERE id = ?', [id]);
+        
+        if (!account.length) {
+            return res.status(404).json({ error: 'Account not found' });
+        }
+        
+        console.log(`🔄 Fresh reconnect initiated for account ${id}`);
+        
+        // Clean up any existing session and credentials
+        await whatsappService.disconnectAccount(id);
+        
+        // Clear database state for fresh start
+        await database.query(
+            'UPDATE accounts SET status = "connecting", qr_code = NULL, last_connected = NULL, updated_at = NOW() WHERE id = ?',
+            [id]
+        );
+        
+        // Log the fresh connection attempt
+        await database.query(
+            'INSERT INTO activity_logs (account_id, action, description) VALUES (?, ?, ?)',
+            [id, 'fresh_reconnect', 'Fresh reconnection initiated - starting new session']
+        );
+        
+        // Wait a moment for cleanup
+        setTimeout(async () => {
+            try {
+                await whatsappService.connectAccount(id);
+                console.log(`✅ Fresh connection started for account ${id}`);
+            } catch (connectError) {
+                console.error(`❌ Fresh connection failed for account ${id}:`, connectError);
+            }
+        }, 1000);
+        
+        res.json({ 
+            success: true,
+            message: 'Fresh connection initiated. QR code will be generated shortly.' 
+        });
+        
+    } catch (error) {
+        console.error('Fresh reconnect error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // Force reconnect account (aggressive reconnect with new QR)
 router.post('/:id/force-reconnect', async (req, res) => {
     try {

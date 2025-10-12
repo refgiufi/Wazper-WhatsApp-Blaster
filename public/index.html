@@ -6,6 +6,29 @@
     <title>Wazper - WhatsApp Blaster Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .bg-success-subtle {
+            background-color: #d1e7dd !important;
+        }
+        .bg-danger-subtle {
+            background-color: #f8d7da !important;
+        }
+        .font-monospace {
+            font-family: 'Courier New', monospace;
+        }
+        #sendResults {
+            font-size: 0.875rem;
+        }
+        #sendResults .py-1 {
+            border-left: 3px solid transparent;
+        }
+        #sendResults .bg-success-subtle {
+            border-left-color: #198754;
+        }
+        #sendResults .bg-danger-subtle {
+            border-left-color: #dc3545;
+        }
+    </style>
     <link href="/css/style.css" rel="stylesheet">
 </head>
 <body>
@@ -185,9 +208,14 @@
                 <div id="accounts-section" class="content-section" style="display: none;">
                     <div class="d-flex justify-content-between align-items-center mb-4">
                         <h2><i class="fas fa-users me-2"></i>Akun WhatsApp</h2>
-                        <button class="btn btn-primary" onclick="createNewAccount()">
-                            <i class="fas fa-plus"></i> Tambah Akun
-                        </button>
+                        <div class="btn-group">
+                            <button class="btn btn-info" onclick="checkAllAccountsStatus()" title="Cek status semua akun">
+                                <i class="fas fa-sync-alt"></i> Cek Semua Status
+                            </button>
+                            <button class="btn btn-primary" onclick="createNewAccount()">
+                                <i class="fas fa-plus"></i> Tambah Akun
+                            </button>
+                        </div>
                     </div>
 
                     <div class="card shadow">
@@ -234,19 +262,22 @@
                                                 </select>
                                             </div>
                                             <div class="col-md-6">
-                                                <label for="toNumber" class="form-label">Ke Nomor</label>
-                                                <input type="text" class="form-control" id="toNumber" 
-                                                       placeholder="628123456789" required>
-                                                <div class="form-text">Format: 628123456789 (tanpa +, spasi, atau tanda hubung)</div>
+                                                <label for="recipients" class="form-label">Penerima</label>
+                                                <textarea class="form-control" id="recipients" rows="5" required
+                                                          placeholder="628123456789&#10;628234567890,John Doe&#10;628345678901,Jane Smith,Manager,IT,Jakarta&#10;&#10;Format: satu nomor per baris&#10;Untuk mail merge: 628123456,data1,data2,data3,dst (max 10 data)"></textarea>
+                                                <div class="form-text">
+                                                    Satu nomor per baris. Untuk mail merge: 628123456,data1,data2,data3 (maksimal 10 data per nomor)
+                                                    <br><span id="recipientCount" class="text-primary">0 penerima terdeteksi</span>
+                                                </div>
                                             </div>
                                         </div>
 
                                         <div class="mb-3">
-                                            <label for="messageText" class="form-label">Pesan</label>
+                                            <label for="messageText" class="form-label">Pesan Template</label>
                                             <textarea class="form-control" id="messageText" rows="6" 
-                                                      placeholder="Tulis pesan Anda di sini..."></textarea>
+                                                      placeholder="Halo, selamat pagi bapak/ibu {text1}&#10;Posisi: {text2}, Department: {text3}&#10;&#10;Gunakan {text1} s/d {text10} untuk mail merge"></textarea>
                                             <div class="form-text">
-                                                <span id="charCount">0</span> karakter
+                                                <span id="charCount">0</span> karakter | Gunakan {text1} sampai {text10} untuk mail merge
                                             </div>
                                         </div>
 
@@ -278,6 +309,29 @@
                                             </div>
                                         </div>
 
+                                        <!-- Delay Configuration -->
+                                        <div class="mb-3">
+                                            <label class="form-label">
+                                                <i class="fas fa-clock me-2"></i>Delay Antar Pesan (detik)
+                                            </label>
+                                            <div class="row">
+                                                <div class="col-md-6">
+                                                    <label for="delayMin" class="form-label text-muted small">Minimum</label>
+                                                    <input type="number" class="form-control" id="delayMin" 
+                                                           min="1" max="300" value="10" placeholder="10">
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label for="delayMax" class="form-label text-muted small">Maksimum</label>
+                                                    <input type="number" class="form-control" id="delayMax" 
+                                                           min="1" max="300" value="30" placeholder="30">
+                                                </div>
+                                            </div>
+                                            <div class="form-text">
+                                                <i class="fas fa-info-circle me-1"></i>
+                                                Delay random antara <span id="delayDisplay">10-30</span> detik antar pengiriman untuk menghindari spam detection
+                                            </div>
+                                        </div>
+
                                         <div class="mb-3">
                                             <div class="form-check">
                                                 <input class="form-check-input" type="checkbox" id="scheduleMessage">
@@ -300,10 +354,27 @@
                                             </div>
                                         </div>
 
-                                        <div class="d-grid">
-                                            <button type="submit" class="btn btn-primary btn-lg">
-                                                <i class="fas fa-paper-plane me-2"></i>Kirim Pesan
-                                            </button>
+                                        <!-- Action Buttons -->
+                                        <div class="row">
+                                            <div class="col-12">
+                                                <button type="submit" class="btn btn-primary btn-lg w-100" id="sendButton">
+                                                    <i class="fas fa-paper-plane me-2"></i>Kirim Pesan
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Control Buttons (hidden by default) -->
+                                        <div class="row mt-2" id="controlButtons" style="display: none;">
+                                            <div class="col-6">
+                                                <button type="button" class="btn btn-warning btn-lg w-100" id="pauseButton">
+                                                    <i class="fas fa-pause me-2"></i>Pause
+                                                </button>
+                                            </div>
+                                            <div class="col-6">
+                                                <button type="button" class="btn btn-danger btn-lg w-100" id="stopButton">
+                                                    <i class="fas fa-stop me-2"></i>Stop
+                                                </button>
+                                            </div>
                                         </div>
                                     </form>
                                 </div>
@@ -325,7 +396,7 @@
                                 </div>
                             </div>
 
-                            <div class="card shadow">
+                            <div class="card shadow mb-3">
                                 <div class="card-header bg-info text-white">
                                     <h6 class="mb-0"><i class="fas fa-lightning-bolt me-2"></i>Quick Templates</h6>
                                 </div>
@@ -342,6 +413,31 @@
                                         </button>
                                         <button class="btn btn-outline-primary btn-sm" onclick="insertTemplate('thanks')">
                                             🙏 Terima Kasih
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Send Results -->
+                            <div class="card shadow" id="sendResultsCard" style="display: none;">
+                                <div class="card-header bg-warning text-dark">
+                                    <h6 class="mb-0"><i class="fas fa-chart-bar me-2"></i>Hasil Pengiriman</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="mb-2">
+                                        <small class="text-muted">Summary:</small>
+                                        <div id="sendSummary" class="fw-bold text-primary">
+                                            <!-- Summary will be inserted here -->
+                                        </div>
+                                    </div>
+                                    <div class="border rounded p-2" style="max-height: 300px; overflow-y: auto;">
+                                        <div id="sendResults">
+                                            <!-- Results will be inserted here -->
+                                        </div>
+                                    </div>
+                                    <div class="mt-2">
+                                        <button class="btn btn-sm btn-outline-secondary" onclick="clearSendResults()">
+                                            <i class="fas fa-times me-1"></i>Clear Results
                                         </button>
                                     </div>
                                 </div>
@@ -416,14 +512,17 @@
                         </div>
                     </div>
                     
-                    <div class="alert alert-success" role="alert">
+                    <div class="alert alert-info" role="alert">
                         <i class="fas fa-info-circle me-2"></i>
-                        <small>QR Code akan otomatis update saat status koneksi berubah</small>
+                        <small>QR Code harus di-refresh manual. Klik "Cek Status" untuk memeriksa koneksi.</small>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-primary me-2" id="refresh-qr-btn">
                         <i class="fas fa-sync-alt me-2"></i>Refresh QR
+                    </button>
+                    <button type="button" class="btn btn-info me-2" id="check-status-btn">
+                        <i class="fas fa-plug me-2"></i>Cek Status
                     </button>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
                         <i class="fas fa-times me-2"></i>Tutup

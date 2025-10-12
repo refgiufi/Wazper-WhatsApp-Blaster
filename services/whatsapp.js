@@ -36,10 +36,14 @@ class WhatsAppService {
                     'SELECT * FROM accounts WHERE status != "disconnected"'
                 );
                 
+                console.log(`🔄 Auto-connecting ${accounts.length} accounts...`);
+                
                 // Connect accounts one by one with individual error handling
                 for (const account of accounts) {
                     try {
+                        console.log(`🔌 Attempting to connect account ${account.id} (${account.name})...`);
                         await this.connectAccount(account.id);
+                        console.log(`✅ Account ${account.id} connected successfully`);
                     } catch (accountError) {
                         console.error(`❌ Failed to connect account ${account.id}:`, accountError.message);
                         // Update account status to error but don't crash the whole service
@@ -57,7 +61,7 @@ class WhatsAppService {
                 console.error('❌ Failed to load accounts from database:', dbError.message);
             }
             
-            console.log('✅ WhatsApp service initialized');
+            console.log('✅ WhatsApp service initialized (Auto-connection mode)');
         } catch (error) {
             console.error('❌ Failed to initialize WhatsApp service:', error);
             // Don't throw error to prevent server crash
@@ -210,9 +214,16 @@ class WhatsAppService {
             } else if (connection === 'open') {
                 console.log(`Account ${accountId} connected successfully`);
                 
+                // Get current account data from database
+                const [currentAccount] = await database.query(
+                    'SELECT phone, name FROM accounts WHERE id = ?',
+                    [accountId]
+                );
+                
                 // Get user info from WhatsApp
                 let detectedPhone = null;
-                let accountName = `device-${accountId}`;
+                let accountName = currentAccount?.name || `device-${accountId}`;
+                let phoneChanged = false;
                 
                 try {
                     // Try to get user info
@@ -221,7 +232,14 @@ class WhatsAppService {
                         // Extract phone number from user ID (format: number:device@s.whatsapp.net)
                         const fullId = user.id.split('@')[0]; // Get part before @
                         detectedPhone = fullId.split(':')[0]; // Remove device ID part (:XX)
-                        console.log(`Detected phone number: ${detectedPhone}`);
+                        console.log(`📱 Detected phone number: ${detectedPhone}`);
+                        
+                        // Check if phone number changed
+                        const currentPhone = currentAccount?.phone;
+                        if (currentPhone && currentPhone !== detectedPhone) {
+                            phoneChanged = true;
+                            console.log(`📞 Phone number changed from ${currentPhone} to ${detectedPhone}`);
+                        }
                     }
                 } catch (infoError) {
                     console.log('Could not detect phone number automatically');
@@ -234,9 +252,13 @@ class WhatsAppService {
                 );
 
                 // Log connection activity
+                const logDescription = phoneChanged 
+                    ? `Account reconnected with new phone number: ${detectedPhone} (previously: ${currentAccount?.phone})` 
+                    : `Account connected successfully${detectedPhone ? ' - Phone: ' + detectedPhone : ''}`;
+                    
                 await database.query(
                     'INSERT INTO activity_logs (account_id, action, description) VALUES (?, ?, ?)',
-                    [accountId, 'connected', `Account connected successfully${detectedPhone ? ' - Phone: ' + detectedPhone : ''}`]
+                    [accountId, phoneChanged ? 'phone_updated' : 'connected', logDescription]
                 );
             }
             
@@ -284,17 +306,40 @@ class WhatsAppService {
             const stringAccountId = String(accountId);
             
             // DEBUG: Check sessions
+            const numericAccountId = parseInt(accountId);
             console.log(`🔍 Session debug:`);
             console.log(`  - Raw accountId: "${accountId}" (type: ${typeof accountId})`);
-            console.log(`  - String accountId: "${stringAccountId}" (type: ${typeof stringAccountId})`);
+            console.log(`  - String accountId: "${stringAccountId}"`);
+            console.log(`  - Numeric accountId: ${numericAccountId}`);
             console.log(`  - Available session keys:`, Array.from(this.sessions.keys()));
-            console.log(`  - Session exists:`, this.sessions.has(stringAccountId));
             
-            const sock = this.sessions.get(stringAccountId);
+            // Try numeric key first (sessions are stored as numeric)
+            let sock = this.sessions.get(numericAccountId);
+            console.log(`  - Numeric key ${numericAccountId}:`, !!sock);
+            
+            // Fallback: try string key
+            if (!sock) {
+                sock = this.sessions.get(stringAccountId);
+                console.log(`  - String key "${stringAccountId}":`, !!sock);
+            }
             
             if (!sock) {
+                console.log(`❌ No session found. Available:`, Array.from(this.sessions.keys()));
                 throw new Error('Account not connected');
             }
+            
+            // Debug socket properties
+            console.log(`🔍 Socket properties:`, Object.keys(sock));
+            console.log(`🔍 Socket state:`, sock.state || 'unknown');
+            console.log(`🔍 Socket user:`, sock.user ? 'present' : 'missing');
+            
+            // Check if socket has essential properties instead of ws.readyState
+            if (!sock.user && !sock.authState) {
+                console.log(`⚠️ Socket missing authentication, might not be ready`);
+                // Don't throw error, let it try to send and fail naturally
+            }
+            
+            console.log(`✅ Proceeding with message send attempt...`);
 
             // Format phone number
             const jid = phone.includes('@') ? phone : `${phone}@s.whatsapp.net`;
@@ -570,11 +615,22 @@ class WhatsAppService {
 
     async sendTextMessage(accountId, toNumber, message) {
         try {
-            // Convert accountId to string to match session keys (sessions are stored as strings)
+            // Convert accountId to numeric to match session keys (sessions are stored as numeric)
+            const numericAccountId = parseInt(accountId);
             const stringAccountId = String(accountId);
-            const sock = this.sessions.get(stringAccountId);
+            
+            // Try numeric key first (sessions are stored as numeric)
+            let sock = this.sessions.get(numericAccountId);
+            console.log(`🔍 sendTextMessage session lookup - numeric key ${numericAccountId}:`, !!sock);
+            
+            // Fallback: try string key
+            if (!sock) {
+                sock = this.sessions.get(stringAccountId);
+                console.log(`🔍 sendTextMessage session lookup - string key "${stringAccountId}":`, !!sock);
+            }
             
             if (!sock) {
+                console.log(`❌ No session found. Available:`, Array.from(this.sessions.keys()));
                 throw new Error(`Account ${accountId} is not connected`);
             }
             

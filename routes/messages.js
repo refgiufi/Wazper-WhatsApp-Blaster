@@ -493,4 +493,197 @@ router.delete('/contacts/:id', async (req, res) => {
     }
 });
 
+// Bulk message routes
+router.post('/send-bulk', async (req, res) => {
+    try {
+        const { fromAccountId, recipients, message, scheduledAt } = req.body;
+        
+        if (!fromAccountId || !recipients || !Array.isArray(recipients) || recipients.length === 0) {
+            return res.status(400).json({ error: 'Invalid request data' });
+        }
+        
+        if (!message || !message.trim()) {
+            return res.status(400).json({ error: 'Message is required' });
+        }
+        
+        // Validate phone numbers
+        const phoneRegex = /^[0-9]{10,15}$/;
+        const invalidNumbers = recipients.filter(num => !phoneRegex.test(num));
+        if (invalidNumbers.length > 0) {
+            return res.status(400).json({ 
+                error: 'Invalid phone numbers',
+                invalidNumbers: invalidNumbers
+            });
+        }
+        
+        const results = [];
+        const whatsapp = require('../services/whatsapp');
+        
+        // Limit bulk sends to prevent abuse
+        if (recipients.length > 100) {
+            return res.status(400).json({ error: 'Maximum 100 recipients per bulk send' });
+        }
+        
+        for (const toNumber of recipients) {
+            try {
+                const result = await whatsapp.sendTextMessage(fromAccountId, toNumber, message);
+                
+                // Log message to database
+                try {
+                    await database.query(
+                        'INSERT INTO messages (from_account_id, to_number, message_text, status, sent_at, message_type) VALUES (?, ?, ?, ?, NOW(), ?)',
+                        [fromAccountId, toNumber, message, 'sent', 'text']
+                    );
+                } catch (dbError) {
+                    console.error('Database logging error:', dbError);
+                }
+                
+                results.push({
+                    toNumber: toNumber,
+                    success: true,
+                    messageId: result.key?.id
+                });
+                
+            } catch (sendError) {
+                console.error(`Error sending to ${toNumber}:`, sendError);
+                results.push({
+                    toNumber: toNumber,
+                    success: false,
+                    error: sendError.message
+                });
+            }
+        }
+        
+        const successful = results.filter(r => r.success).length;
+        const failed = results.filter(r => !r.success).length;
+        
+        res.json({
+            message: `Bulk send completed: ${successful} successful, ${failed} failed`,
+            successful: successful,
+            failed: failed,
+            results: results
+        });
+        
+    } catch (error) {
+        console.error('Bulk send error:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+router.post('/send-bulk-media', upload.single('media'), async (req, res) => {
+    try {
+        const { fromAccountId, recipients, message, scheduledAt } = req.body;
+        const mediaFile = req.file;
+        
+        if (!fromAccountId || !recipients) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+        
+        // Parse recipients if it's a string
+        let recipientList;
+        try {
+            recipientList = typeof recipients === 'string' ? JSON.parse(recipients) : recipients;
+        } catch (e) {
+            return res.status(400).json({ error: 'Invalid recipients format' });
+        }
+        
+        if (!Array.isArray(recipientList) || recipientList.length === 0) {
+            return res.status(400).json({ error: 'Recipients must be a non-empty array' });
+        }
+        
+        // Validate phone numbers
+        const phoneRegex = /^[0-9]{10,15}$/;
+        const invalidNumbers = recipientList.filter(num => !phoneRegex.test(num));
+        if (invalidNumbers.length > 0) {
+            return res.status(400).json({ 
+                error: 'Invalid phone numbers',
+                invalidNumbers: invalidNumbers
+            });
+        }
+        
+        // Limit bulk sends to prevent abuse
+        if (recipientList.length > 50) { // Lower limit for media due to file size
+            return res.status(400).json({ error: 'Maximum 50 recipients per bulk media send' });
+        }
+        
+        if (!mediaFile && (!message || !message.trim())) {
+            return res.status(400).json({ error: 'Either message or media is required' });
+        }
+        
+        const results = [];
+        const whatsapp = require('../services/whatsapp');
+        
+        for (const toNumber of recipientList) {
+            try {
+                let result;
+                let messageType = 'text';
+                
+                if (mediaFile) {
+                    result = await whatsapp.sendMediaMessage(fromAccountId, toNumber, message || '', mediaFile);
+                    messageType = 'media';
+                } else {
+                    result = await whatsapp.sendTextMessage(fromAccountId, toNumber, message);
+                }
+                
+                // Log message to database
+                try {
+                    await database.query(
+                        'INSERT INTO messages (from_account_id, to_number, message_text, media_path, status, sent_at, message_type) VALUES (?, ?, ?, ?, ?, NOW(), ?)',
+                        [fromAccountId, toNumber, message || '', mediaFile?.path || null, 'sent', messageType]
+                    );
+                } catch (dbError) {
+                    console.error('Database logging error:', dbError);
+                }
+                
+                results.push({
+                    toNumber: toNumber,
+                    success: true,
+                    messageId: result.key?.id
+                });
+                
+            } catch (sendError) {
+                console.error(`Error sending to ${toNumber}:`, sendError);
+                results.push({
+                    toNumber: toNumber,
+                    success: false,
+                    error: sendError.message
+                });
+            }
+        }
+        
+        // Cleanup temp file after all sends
+        if (mediaFile?.path) {
+            try {
+                await fs.remove(mediaFile.path);
+            } catch (cleanupError) {
+                console.error('Cleanup error:', cleanupError);
+            }
+        }
+        
+        const successful = results.filter(r => r.success).length;
+        const failed = results.filter(r => !r.success).length;
+        
+        res.json({
+            message: `Bulk media send completed: ${successful} successful, ${failed} failed`,
+            successful: successful,
+            failed: failed,
+            results: results
+        });
+        
+    } catch (error) {
+        console.error('Bulk media send error:', error);
+        
+        // Cleanup temp file on error
+        if (req.file?.path) {
+            try {
+                await fs.remove(req.file.path);
+            } catch (cleanupError) {
+                console.error('Cleanup error:', cleanupError);
+            }
+        }
+        
+        res.status(500).json({ error: error.message });
+    }
+});
+
 module.exports = router;

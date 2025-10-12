@@ -34,7 +34,7 @@ Aplikasi WhatsApp Blaster berbasis Node.js dengan fitur multi-account yang mengg
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/yourusername/wazper-whatsapp-blaster.git
+git clone https://github.com/refgiufi/Wazper-WhatsApp-Blaster.git
 cd wazper-whatsapp-blaster
 ```
 

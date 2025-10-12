@@ -10,17 +10,22 @@ body {
 #sidebar-wrapper {
     min-height: 100vh;
     width: 250px;
-    margin-left: -250px;
+    margin-left: 0;
     transition: margin 0.25s ease-out;
 }
 
 #sidebar-wrapper.toggled {
-    margin-left: 0;
+    margin-left: -250px;
 }
 
 #page-content-wrapper {
     width: 100%;
+    margin-left: 0;
     transition: all 0.25s ease-out;
+}
+
+#sidebar-wrapper.toggled ~ #page-content-wrapper {
+    margin-left: 0;
 }
 
 .sidebar-heading {
@@ -248,4 +253,21 @@ body {
 
 ::-webkit-scrollbar-thumb:hover {
     background: #555;
+}
+
+/* Responsive design for sidebar default open */
+@media (max-width: 768px) {
+    #sidebar-wrapper {
+        margin-left: -250px;
+        position: absolute;
+        z-index: 1000;
+    }
+    
+    #sidebar-wrapper.toggled {
+        margin-left: 0;
+    }
+    
+    #page-content-wrapper {
+        margin-left: 0;
+    }
 }
