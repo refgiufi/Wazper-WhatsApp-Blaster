@@ -1,0 +1,23 @@
+{
+  "watch": [
+    "server.js",
+    "routes/",
+    "services/",
+    "config/",
+    "public/"
+  ],
+  "ignore": [
+    "sessions/",
+    "uploads/",
+    "node_modules/",
+    "*.log",
+    ".git/",
+    "README.md",
+    "package-lock.json"
+  ],
+  "ext": "js,json",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "delay": 2000
+}

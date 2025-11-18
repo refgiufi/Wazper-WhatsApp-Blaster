@@ -103,7 +103,6 @@ dist
 
 # WhatsApp Sessions (sensitive data)
 sessions/
-*.json
 
 # Uploaded files (can be large and sensitive)
 uploads/*
